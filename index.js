@@ -101,74 +101,32 @@ const app = express();
 app.use(cors());
 
 // Serve the form with available qualities in a dropdown
+
+const YOUTUBE_COOKIES = `SID=YOUR_SID_VALUE; HSID=YOUR_HSID_VALUE; SSID=YOUR_SSID_VALUE; SAPISID=YOUR_SAPISID_VALUE`;
+
 app.get("/get-form-options", async (req, res) => {
     const { url } = req.query;
-    if (!url) {
-        return res.status(400).send('<h1>Please provide a YouTube video URL</h1>');
-    }
+    if (!url) return res.status(400).json({ error: "URL is required" });
 
     try {
-        const videoInfo = await ytdl.getInfo(url);
+        const videoInfo = await ytdl.getInfo(url, {
+            requestOptions: { headers: { Cookie: YOUTUBE_COOKIES } },
+        });
+
         const qualities = videoInfo.formats
+            .filter(format => format.hasVideo)
             .map(format => ({
-                qualityLabel: format.qualityLabel,
-                mimeType: format.mimeType.split(';')[0],
                 itag: format.itag,
-                hasVideo: format.hasVideo,
-                hasAudio: format.hasAudio,
-                url: format.url
-            }))
-            .filter(format => format.hasVideo || format.hasAudio);
+                quality: format.qualityLabel,
+                type: format.mimeType.split(";")[0],
+            }));
 
-        const formOptions = qualities.map(format => {
-            return `<option value="${format.itag}">${format.qualityLabel} - ${format.mimeType}</option>`;
-        }).join('');
-
-        const formHTML = `
-            <h1>Select a Quality to Download</h1>
-            <form action="/download" method="GET">
-                <input type="hidden" name="url" value="${url}">
-                <select name="itag">
-                    ${formOptions}
-                </select>
-                <button type="submit">Download</button>
-            </form>
-            <div id="download-progress" style="margin-top: 20px;">
-                <div>Progress: <span id="progress">0%</span></div>
-                <div>Time Left: <span id="timeRemaining">N/A</span></div>
-                <div>Size: <span id="videoSize">0 MB</span></div>
-                <progress id="progressBar" value="0" max="100" style="width: 100%;"></progress>
-            </div>
-            <script>
-                const progressBar = document.getElementById('progressBar');
-                const progressText = document.getElementById('progress');
-                const timeText = document.getElementById('timeRemaining');
-                const sizeText = document.getElementById('videoSize');
-                
-                // Track download progress from server
-                const source = new EventSource('/download-progress?url=${url}');
-                source.onmessage = function(event) {
-                    const data = JSON.parse(event.data);
-                    if (data.progress !== undefined) {
-                        progressBar.value = data.progress;
-                        progressText.innerText = data.progress + '%';
-                    }
-                    if (data.timeLeft !== undefined) {
-                        timeText.innerText = 'Time Left: ' + data.timeLeft + 's';
-                    }
-                    if (data.sizeMB !== undefined) {
-                        sizeText.innerText = (data.sizeMB).toFixed(2) + ' MB';
-                    }
-                };
-            </script>
-        `;
-        res.send(formHTML);
+        res.json({ qualities });
     } catch (error) {
-        console.error("Error fetching video info:", error);
+        console.error("Error fetching video:", error);
         res.status(500).json({ error: "Failed to fetch video details", details: error.message });
     }
 });
-
 // SSE to send download progress
 app.get("/download-progress", async (req, res) => {
     const { url } = req.query;
