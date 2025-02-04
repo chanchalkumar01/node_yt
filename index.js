@@ -108,131 +108,60 @@ function extractQualityNumber(qualityLabel) {
     return match ? parseInt(match[0], 10) : 0; // Convert to integer or default to 0
 }
 // Serve the form with available qualities in a dropdown
+const YOUTUBE_COOKIES = `SID=g.a000swi9nuBuIOD8NaH6HM5fCrItDVQi81wVQYEEp9IhRflbL-3Eb3-Nq6pxUSHQxYTNvlvzOgACgYKAb4SARQSFQHGX2MiorOSG8bzEh6zqJyF8FkFLBoVAUF8yKq5iYJIgvZhxt6-_2F86BvO0076; 
+                         HSID=AbwDidialpIflgej7;
+                         SSID=AARFXg1JFi8-8Gd8q;
+                         SAPISID=DdiZ3gtH9ouI1ejA/A32qFJBLS9aaYFe24`;
+
 app.get("/get-form-options", async (req, res) => {
     const {url} = req.query;
     if (!url) {
-        return res.status(400).send('<h1>Please provide a YouTube video URL</h1>');
+        return res.status(400).send("<h1>Please provide a YouTube video URL</h1>");
     }
 
     try {
-        const videoInfo = await ytdl.getInfo(url);
-        const seenQualities = new Set();
+        const videoInfo = await ytdl.getInfo(url, {
+            requestOptions: {
+                headers: {Cookie: YOUTUBE_COOKIES},
+            },
+        });
 
+        const seenQualities = new Set();
         const qualities = videoInfo.formats
             .map(format => ({
-                qualityLabel: format.qualityLabel,
-                mimeType: format.mimeType.split(';')[0],
+                qualityLabel: format.qualityLabel || "Unknown",
+                mimeType: format.mimeType ? format.mimeType.split(";")[0] : "Unknown",
                 itag: format.itag,
                 hasVideo: format.hasVideo,
-                // hasAudio: format.hasAudio,
                 url: format.url,
-                qualityNumber: extractQualityNumber(format.qualityLabel)
+                qualityNumber: extractQualityNumber(format.qualityLabel),
             }))
-            // .filter(format => format.hasVideo);
             .filter(format => {
-                if (format.hasVideo && !seenQualities.has(format.qualityLabel) && format.mimeType === 'video/mp4') {
+                if (format.hasVideo && !seenQualities.has(format.qualityLabel) && format.mimeType === "video/mp4") {
                     seenQualities.add(format.qualityLabel);
                     return true;
                 }
                 return false;
             })
-            .sort((a, b) => {
-                // Sort by extracted quality number (descending order)
-                return a.qualityNumber - b.qualityNumber;
-            });
-        const formOptions = qualities.map(format => {
-            return `<option value="${format.itag}">${format.qualityLabel} - ${format.mimeType}</option>`;
-        }).join('');
+            .sort((a, b) => b.qualityNumber - a.qualityNumber); // Sort by resolution (highest to lowest)
+
+        const formOptions = qualities
+            .map(format => `<option value="${format.itag}">${format.qualityLabel} - ${format.mimeType}</option>`)
+            .join("");
 
         const formHTML = `
             <h1>Select a Quality to Download</h1>
             <form action="/download" method="GET">
                 <input type="hidden" name="url" value="${url}">
-                <select name="itag">
-                    ${formOptions}
-                </select>
+                <select name="itag">${formOptions}</select>
                 <button type="submit">Download</button>
             </form>
-            <div id="download-progress" style="margin-top: 20px;">
-                <div>Progress: <span id="progress">0%</span></div>
-                <div>Time Left: <span id="timeRemaining">N/A</span></div>
-                <div>Size: <span id="videoSize">0 MB</span></div>
-                <progress id="progressBar" value="0" max="100" style="width: 100%;"></progress>
-            </div>
-            <script>
-                const progressBar = document.getElementById('progressBar');
-                const progressText = document.getElementById('progress');
-                const timeText = document.getElementById('timeRemaining');
-                const sizeText = document.getElementById('videoSize');
-                
-                // Track download progress from server
-                const source = new EventSource('/download-progress?url=${url}');
-                source.onmessage = function(event) {
-                    const data = JSON.parse(event.data);
-                    if (data.progress !== undefined) {
-                        progressBar.value = data.progress;
-                        progressText.innerText = data.progress + '%';
-                    }
-                    if (data.timeLeft !== undefined) {
-                        timeText.innerText = 'Time Left: ' + data.timeLeft + 's';
-                    }
-                    if (data.sizeMB !== undefined) {
-                        sizeText.innerText = (data.sizeMB).toFixed(2) + ' MB';
-                    }
-                };
-            </script>
         `;
+
         res.send(formHTML);
     } catch (error) {
         console.error("Error fetching video info:", error);
         res.status(500).json({error: "Failed to fetch video details", details: error.message});
-    }
-});
-
-// SSE to send download progress
-app.get("/download-progress", async (req, res) => {
-    const { url } = req.query;
-    if (!url) {
-        return res.status(400).json({ error: "YouTube URL is required" });
-    }
-
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-
-    try {
-        const videoInfo = await ytdl.getInfo(url);
-        const videoSize = videoInfo.formats[0].contentLength || 0;
-        const sizeMB = videoSize / 1024 / 1024; // Convert bytes to MB
-
-        let downloaded = 0;
-        const startTime = Date.now();
-
-        // Stream the video with progress tracking
-        ytdl(url, { format: videoInfo.formats[0] })
-            .on('data', (chunk) => {
-                downloaded += chunk.length;
-                const elapsedTime = (Date.now() - startTime) / 1000; // in seconds
-                const downloadSpeed = downloaded / elapsedTime / 1024; // KB/s
-                const timeRemaining = (videoSize - downloaded) / downloadSpeed; // Estimated time in seconds
-
-                const progress = (downloaded / videoSize) * 100;
-
-                // Send progress info to client via SSE
-                res.write(`data: ${JSON.stringify({
-                    progress: progress.toFixed(2),
-                    timeLeft: timeRemaining.toFixed(0),
-                    sizeMB: sizeMB
-                })}\n\n`);
-            })
-            .on('end', () => {
-                console.log("Download finished");
-                res.write('data: {"progress": 100, "timeLeft": 0, "sizeMB": 0}\n\n');
-                res.end(); // End the connection when download finishes
-            });
-    } catch (error) {
-        console.error("Error fetching video:", error);
-        res.status(500).json({ error: "Failed to fetch video", details: error.message });
     }
 });
 
